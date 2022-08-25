@@ -19,6 +19,16 @@
 //!
 //! ## `PciRegion` implementations
 //!
+//! - [`struct OwningPciRegion`](OwningPciRegion). A region that somehow owns its backing resources,
+//!   and so is not bound by the lifetime of a [`PciDevice`](crate::device::PciDevice).
+//!   - `OwningPciRegion` implements `PciRegion`.
+//!   - `&'a OwningPciRegion` implements `AsPciSubregion<'a>`, for all `'a`.
+//!
+//! - [`struct MappedOwningPciRegion`](MappedOwningPciRegion). What you get by calling
+//!   [`OwningPciRegion::map`].
+//!   - `MappedOwningPciRegion` implements `PciRegion`.
+//!   - `&'a MappedOwningPciRegion` implements `AsPciSubregion<'a>`, for all `'a`.
+//!
 //! - [`struct PciMemoryRegion<'a>`](PciMemoryRegion). A region backed by a `&'a [u8]`, `&'a mut
 //!   [u8]`, or raw memory.
 //!   - `PciMemoryRegion<'a>` implements `PciRegion`, for all `'a`.
@@ -31,6 +41,9 @@ use std::io::{self, ErrorKind};
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::{Bound, Range, RangeBounds};
+use std::sync::Arc;
+
+use crate::device::PciDeviceInternal;
 
 /* ---------------------------------------------------------------------------------------------- */
 
@@ -166,6 +179,59 @@ pub trait PciRegion: Debug + Send + Sync + Sealed {
     fn write_le_u32(&self, offset: u64, value: u32) -> io::Result<()>;
 }
 
+/// Implements [`PciRegion`] for the given type `T` by delegating all methods to the existing
+/// implementation of [`PciRegion`] for `&T`.
+macro_rules! impl_delegating_pci_region {
+    ($type:ty) => {
+        impl $crate::regions::Sealed for $type {}
+        impl $crate::regions::PciRegion for $type {
+            fn len(&self) -> u64 {
+                $crate::regions::PciRegion::len(&self)
+            }
+
+            fn permissions(&self) -> $crate::regions::Permissions {
+                $crate::regions::PciRegion::permissions(&self)
+            }
+
+            fn as_ptr(&self) -> ::std::option::Option<*const u8> {
+                $crate::regions::PciRegion::as_ptr(&self)
+            }
+
+            fn as_mut_ptr(&self) -> ::std::option::Option<*mut u8> {
+                $crate::regions::PciRegion::as_mut_ptr(&self)
+            }
+
+            fn read_bytes(&self, offset: u64, buffer: &mut [u8]) -> ::std::io::Result<()> {
+                $crate::regions::PciRegion::read_bytes(&self, offset, buffer)
+            }
+
+            fn read_u8(&self, offset: u64) -> ::std::io::Result<u8> {
+                $crate::regions::PciRegion::read_u8(&self, offset)
+            }
+
+            fn write_u8(&self, offset: u64, value: u8) -> ::std::io::Result<()> {
+                $crate::regions::PciRegion::write_u8(&self, offset, value)
+            }
+
+            fn read_le_u16(&self, offset: u64) -> ::std::io::Result<u16> {
+                $crate::regions::PciRegion::read_le_u16(&self, offset)
+            }
+
+            fn write_le_u16(&self, offset: u64, value: u16) -> ::std::io::Result<()> {
+                $crate::regions::PciRegion::write_le_u16(&self, offset, value)
+            }
+
+            fn read_le_u32(&self, offset: u64) -> ::std::io::Result<u32> {
+                $crate::regions::PciRegion::read_le_u32(&self, offset)
+            }
+
+            fn write_le_u32(&self, offset: u64, value: u32) -> ::std::io::Result<()> {
+                $crate::regions::PciRegion::write_le_u32(&self, offset, value)
+            }
+        }
+    };
+}
+
 /* ---------------------------------------------------------------------------------------------- */
 
 /// A contiguous part of a [`PciRegion`], which is itself also a `PciRegion`.
@@ -174,7 +240,7 @@ pub trait PciRegion: Debug + Send + Sync + Sealed {
 /// Also makes sure those accesses don't exceed the `PciSubregion`'s end (offset + length).
 ///
 /// Create instances of this by calling [`AsPciSubregion::subregion`] on anything that implements
-/// it, for instance a [`&dyn PciRegion`](PciRegion).
+/// it, for instance a [`&dyn PciRegion`](PciRegion) or [`OwningPciRegion`].
 #[derive(Clone, Copy, Debug)]
 pub struct PciSubregion<'a> {
     region: &'a dyn PciRegion,
@@ -333,6 +399,186 @@ where
         subregion
             .region
             .write_le_u32(subregion.offset + offset, value)
+    }
+}
+
+/* ---------------------------------------------------------------------------------------------- */
+
+#[allow(dead_code)] // for when pci-driver is built with no backends
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RegionIdentifier {
+    Bar(usize),
+    Rom,
+}
+
+/// This is "owning" in the sense that it doesn't borrow the `PciDevice` it came from.
+///
+/// You can use the read and write methods to access the region. This should always work, but may
+/// not be the most efficient method to access it. If the region is "mappable", consider mapping it
+/// into memory using [`OwningPciRegion::map`] and using volatile memory accesses.
+///
+/// For instance, BARs can be I/O Space BARs or Memory Space BARs. In either case, you can access
+/// them through the [`PciRegion`] methods. In addition, if a BAR is a Memory Space BAR, you can map
+/// it, which gives you another type implementing [`PciRegion`], but accesses through it should be
+/// more efficient. You can also obtain a `*const u8` or `*mut u8` from that second [`PciRegion`]
+/// and use that directly.
+#[derive(Debug)]
+pub struct OwningPciRegion {
+    device: Arc<dyn PciDeviceInternal>,
+    region: Arc<dyn PciRegion>,
+    offset: u64,
+    length: u64,
+    identifier: RegionIdentifier,
+    is_mappable: bool,
+}
+
+impl OwningPciRegion {
+    #[allow(dead_code)] // for when pci-driver is built with no backends
+    pub(crate) fn new(
+        device: Arc<dyn PciDeviceInternal>,
+        region: Arc<dyn PciRegion>,
+        identifier: RegionIdentifier,
+        is_mappable: bool,
+    ) -> OwningPciRegion {
+        let offset = 0;
+        let length = region.len();
+
+        OwningPciRegion {
+            device,
+            region,
+            offset,
+            length,
+            identifier,
+            is_mappable,
+        }
+    }
+
+    /// Whether the region can be memory-mapped.
+    ///
+    /// If `false`, [`OwningPciRegion::map`] will always fail.
+    pub fn is_mappable(&self) -> bool {
+        self.is_mappable
+    }
+
+    /// Like PciSubregion's similar method, but returns an "owning" subregion.
+    pub fn owning_subregion(&self, range: impl RangeBounds<u64>) -> OwningPciRegion {
+        let range = clamp_range(range, self.length);
+
+        OwningPciRegion {
+            device: Arc::clone(&self.device),
+            region: Arc::clone(&self.region),
+            offset: self.offset + range.start,
+            length: range.end - range.start,
+            identifier: self.identifier,
+            is_mappable: self.is_mappable,
+        }
+    }
+
+    /// Memory-map some range of the region into the current process' address space.
+    pub fn map(
+        &self,
+        range: impl RangeBounds<u64>,
+        permissions: Permissions,
+    ) -> io::Result<MappedOwningPciRegion> {
+        let range = clamp_range(range, self.region.len());
+
+        if range.end - range.start > usize::MAX as u64 {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "Range length exceeds usize::MAX",
+            ));
+        }
+
+        if (permissions.can_read() && !self.permissions().can_read())
+            || (permissions.can_write() && !self.permissions().can_write())
+        {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "Requested incompatible permissions",
+            ));
+        }
+
+        let length = (range.end - range.start) as usize;
+
+        let ptr = self.device.region_map(
+            self.identifier,
+            self.offset + range.start,
+            length,
+            permissions,
+        )?;
+
+        let mapped_region = unsafe { PciMemoryRegion::new_raw(ptr, length, permissions) };
+
+        Ok(MappedOwningPciRegion {
+            device: Arc::clone(&self.device),
+            region: mapped_region,
+            identifier: self.identifier,
+            ptr,
+            length,
+        })
+    }
+}
+
+impl_delegating_pci_region! { OwningPciRegion }
+
+impl<'a> AsPciSubregion<'a> for &'a OwningPciRegion {
+    fn as_subregion(&self) -> PciSubregion<'a> {
+        (&*self.region).subregion(self.offset..self.offset + self.length)
+    }
+}
+
+/* ---------------------------------------------------------------------------------------------- */
+
+/// A memory-mapped [`OwningPciRegion`]. This is also a [`PciRegion`]. Dropping this unmaps the
+/// region.
+#[derive(Debug)]
+pub struct MappedOwningPciRegion {
+    device: Arc<dyn PciDeviceInternal>,
+    region: PciMemoryRegion<'static>,
+    identifier: RegionIdentifier,
+    ptr: *mut u8,
+    length: usize,
+}
+
+unsafe impl Send for MappedOwningPciRegion {}
+unsafe impl Sync for MappedOwningPciRegion {}
+
+#[allow(clippy::len_without_is_empty)]
+impl MappedOwningPciRegion {
+    // TODO: These three methods shadow PciRegion's. This probably isn't a good idea.
+
+    /// Returns a constant pointer to the beginning of the memory-mapped region.
+    pub fn as_ptr(&self) -> *const u8 {
+        self.ptr
+    }
+
+    /// Returns a mutable pointer to the beginning of the memory-mapped region.
+    pub fn as_mut_ptr(&self) -> *mut u8 {
+        self.ptr
+    }
+
+    /// The length of the region.
+    ///
+    /// Unlike [`PciRegion::len`], returns `usize`.
+    pub fn len(&self) -> usize {
+        self.length
+    }
+}
+
+impl_delegating_pci_region! { MappedOwningPciRegion }
+
+impl<'a> AsPciSubregion<'a> for &'a MappedOwningPciRegion {
+    fn as_subregion(&self) -> PciSubregion<'a> {
+        (&self.region).as_subregion()
+    }
+}
+
+impl Drop for MappedOwningPciRegion {
+    fn drop(&mut self) {
+        unsafe {
+            self.device
+                .region_unmap(self.identifier, self.ptr, self.length)
+        };
     }
 }
 

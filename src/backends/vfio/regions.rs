@@ -11,8 +11,8 @@ use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 
 use crate::backends::vfio::bindings::{
-    vfio_region_info, VFIO_PCI_CONFIG_REGION_INDEX, VFIO_REGION_INFO_FLAG_READ,
-    VFIO_REGION_INFO_FLAG_WRITE,
+    vfio_region_info, VFIO_PCI_CONFIG_REGION_INDEX, VFIO_REGION_INFO_FLAG_MMAP,
+    VFIO_REGION_INFO_FLAG_READ, VFIO_REGION_INFO_FLAG_WRITE,
 };
 use crate::backends::vfio::ioctl::vfio_device_get_region_info;
 use crate::regions::{PciRegion, Permissions};
@@ -25,9 +25,18 @@ pub struct VfioUnmappedPciRegion {
     offset_in_device_file: u64,
     length: u64,
     permissions: Permissions,
+    is_mappable: bool,
 }
 
 impl VfioUnmappedPciRegion {
+    pub(crate) fn offset_in_device_file(&self) -> u64 {
+        self.offset_in_device_file
+    }
+
+    pub(crate) fn is_mappable(&self) -> bool {
+        self.is_mappable
+    }
+
     fn validate_access(
         &self,
         required_alignment: u64,
@@ -154,9 +163,55 @@ pub(crate) fn set_up_config_space(device_file: &Arc<File>) -> io::Result<VfioUnm
         offset_in_device_file: region_info.offset,
         length: region_info.size,
         permissions: Permissions::ReadWrite,
+        is_mappable: false,
     };
 
     Ok(region)
+}
+
+pub(crate) fn set_up_bar_or_rom(
+    device_file: &Arc<File>,
+    vfio_region_index: u32,
+) -> io::Result<Option<Arc<VfioUnmappedPciRegion>>> {
+    let mut region_info = vfio_region_info {
+        argsz: mem::size_of::<vfio_region_info>() as u32,
+        flags: 0,
+        index: vfio_region_index,
+        cap_offset: 0,
+        size: 0,
+        offset: 0,
+    };
+
+    unsafe { vfio_device_get_region_info(device_file.as_raw_fd(), &mut region_info)? };
+
+    if region_info.size == 0 {
+        return Ok(None); // no such region
+    }
+
+    let readable = region_info.flags & VFIO_REGION_INFO_FLAG_READ != 0;
+    let writable = region_info.flags & VFIO_REGION_INFO_FLAG_WRITE != 0;
+
+    let permissions = Permissions::new(readable, writable).ok_or_else(|| {
+        io::Error::new(
+            ErrorKind::Other,
+            "Found a region that is neither readable nor writeable",
+        )
+    })?;
+
+    let region = VfioUnmappedPciRegion {
+        device_file: Arc::clone(device_file),
+        offset_in_device_file: region_info.offset,
+        length: region_info.size,
+        permissions,
+        is_mappable: region_is_mappable(&region_info),
+    };
+
+    Ok(Some(Arc::new(region)))
+}
+
+fn region_is_mappable(region_info: &vfio_region_info) -> bool {
+    // TODO: Probably not necessary to check if length fits in address space?
+    region_info.flags & VFIO_REGION_INFO_FLAG_MMAP != 0 && region_info.size <= usize::MAX as u64
 }
 
 /* ---------------------------------------------------------------------------------------------- */

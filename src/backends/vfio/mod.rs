@@ -16,23 +16,27 @@ mod containers;
 mod ioctl;
 mod regions;
 
+use nix::sys::mman::{mmap, munmap, MapFlags, ProtFlags};
 use std::ffi::CString;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{self, ErrorKind};
-use std::mem;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::os::unix::prelude::OsStrExt;
 use std::path::Path;
 use std::sync::Arc;
+use std::{mem, ptr};
 
 use crate::backends::vfio::bindings::{
-    vfio_device_info, VFIO_DEVICE_FLAGS_PCI, VFIO_PCI_CONFIG_REGION_INDEX,
+    vfio_device_info, VFIO_DEVICE_FLAGS_PCI, VFIO_PCI_BAR0_REGION_INDEX,
+    VFIO_PCI_BAR5_REGION_INDEX, VFIO_PCI_CONFIG_REGION_INDEX, VFIO_PCI_ROM_REGION_INDEX,
 };
 use crate::backends::vfio::ioctl::{vfio_device_get_info, vfio_group_get_device_fd};
-use crate::backends::vfio::regions::{set_up_config_space, VfioUnmappedPciRegion};
-use crate::device::PciDevice;
-use crate::regions::PciRegion;
+use crate::backends::vfio::regions::{
+    set_up_bar_or_rom, set_up_config_space, VfioUnmappedPciRegion,
+};
+use crate::device::{PciDevice, PciDeviceInternal};
+use crate::regions::{OwningPciRegion, PciRegion, Permissions, RegionIdentifier};
 
 pub use containers::VfioContainer;
 
@@ -67,8 +71,7 @@ fn get_device_group_number<P: AsRef<Path>>(device_sysfs_path: P) -> io::Result<u
 /// Provides control over a PCI device using VFIO.
 #[derive(Debug)]
 pub struct VfioPciDevice {
-    container: Arc<VfioContainer>,
-    config_region: VfioUnmappedPciRegion,
+    inner: Arc<VfioPciDeviceInner>,
 }
 
 impl VfioPciDevice {
@@ -136,24 +139,116 @@ impl VfioPciDevice {
 
         let config_region = set_up_config_space(&device_file)?;
 
+        // set up BARs and ROM
+
+        let bars = (VFIO_PCI_BAR0_REGION_INDEX..=VFIO_PCI_BAR5_REGION_INDEX)
+            .into_iter()
+            .map(|index| set_up_bar_or_rom(&device_file, index))
+            .collect::<io::Result<_>>()?;
+
+        let rom = set_up_bar_or_rom(&device_file, VFIO_PCI_ROM_REGION_INDEX)?;
+
         // success
 
         Ok(VfioPciDevice {
-            container,
-            config_region,
+            inner: Arc::new(VfioPciDeviceInner {
+                container,
+                file: device_file,
+                config_region,
+                bars,
+                rom,
+            }),
         })
     }
 
     /// Returns a reference to the container to which the device's group belongs.
     pub fn container(&self) -> &Arc<VfioContainer> {
-        &self.container
+        &self.inner.container
     }
 }
 
 impl crate::device::Sealed for VfioPciDevice {}
 impl PciDevice for VfioPciDevice {
     fn config(&self) -> &dyn PciRegion {
-        &self.config_region
+        &self.inner.config_region
+    }
+
+    fn bar(&self, index: usize) -> Option<OwningPciRegion> {
+        let bar = self.inner.bars.get(index)?.as_ref()?;
+
+        Some(OwningPciRegion::new(
+            Arc::<VfioPciDeviceInner>::clone(&self.inner),
+            Arc::<VfioUnmappedPciRegion>::clone(bar),
+            RegionIdentifier::Bar(index),
+            bar.is_mappable(),
+        ))
+    }
+
+    fn rom(&self) -> Option<OwningPciRegion> {
+        let rom = self.inner.rom.as_ref()?;
+
+        Some(OwningPciRegion::new(
+            Arc::<VfioPciDeviceInner>::clone(&self.inner),
+            Arc::<VfioUnmappedPciRegion>::clone(rom),
+            RegionIdentifier::Rom,
+            rom.is_mappable(),
+        ))
+    }
+}
+
+/* ---------------------------------------------------------------------------------------------- */
+
+#[derive(Debug)]
+struct VfioPciDeviceInner {
+    container: Arc<VfioContainer>,
+
+    file: Arc<File>,
+
+    config_region: VfioUnmappedPciRegion,
+    bars: Box<[Option<Arc<VfioUnmappedPciRegion>>]>,
+    rom: Option<Arc<VfioUnmappedPciRegion>>,
+}
+
+impl PciDeviceInternal for VfioPciDeviceInner {
+    // BARs / ROM
+
+    fn region_map(
+        &self,
+        identifier: RegionIdentifier,
+        offset: u64,
+        len: usize,
+        permissions: Permissions,
+    ) -> io::Result<*mut u8> {
+        let region = match identifier {
+            RegionIdentifier::Bar(index) => &self.bars[index],
+            RegionIdentifier::Rom => &self.rom,
+        };
+
+        let region = region.as_ref().unwrap();
+
+        let prot_flags = match permissions {
+            Permissions::Read => ProtFlags::PROT_READ,
+            Permissions::Write => ProtFlags::PROT_WRITE,
+            Permissions::ReadWrite => ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+        };
+
+        let address = unsafe {
+            mmap(
+                ptr::null_mut(),
+                len,
+                prot_flags,
+                MapFlags::MAP_SHARED,
+                self.file.as_raw_fd(),
+                region.offset_in_device_file() as i64 + offset as i64,
+            )
+        }?;
+
+        Ok(address.cast())
+    }
+
+    unsafe fn region_unmap(&self, _identifier: RegionIdentifier, address: *mut u8, size: usize) {
+        // TODO: Do something other than crash on failure?
+        unsafe { munmap(address.cast(), size) }.unwrap();
     }
 }
 

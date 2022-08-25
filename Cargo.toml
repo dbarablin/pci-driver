@@ -10,7 +10,7 @@ categories = ["hardware-support"]
 
 [features]
 default = ["vfio"]
-vfio = ["nix/ioctl"]
+vfio = ["nix/ioctl", "nix/mman"]
 _unsafe-op-in-unsafe-fn = []
 
 [dependencies]

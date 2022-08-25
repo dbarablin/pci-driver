@@ -5,7 +5,9 @@
 //! The driver development interface revolves around the [`PciDevice`](device::PciDevice) trait,
 //! which represents a PCI __function__ and allows you to:
 //!
-//! 1. Access its Configuration Space.
+//! 1. Access its Configuration Space;
+//! 2. Access the regions defined by its Base Address Registers (BARs);
+//! 3. Access its Expansion ROM.
 //!
 //! Implementations of this trait are called _backends_. For now, a single
 //! [`VfioPciDevice`](backends::vfio::VfioPciDevice) backend is provided, which relies on Linux's
@@ -41,6 +43,48 @@
 //!
 //! let vendor_id: u16 = device.config().read_le_u16(0x00)?;
 //! let device_id: u16 = device.config().read_le_u16(0x02)?;
+//! # std::io::Result::Ok(())
+//! ```
+//!
+//! ## BARs and Expansion ROM
+//!
+//! The [`PciDevice::bar`](device::PciDevice::bar) method can be used to retrieved an
+//! [`OwningPciRegion`](regions::OwningPciRegion) corresponding to a given Base Address Register
+//! (BAR) of the device. The [`OwningPciRegion`](regions::OwningPciRegion) provides the ability to
+//! map the region onto process memory (if the region is mappable).
+//!
+//! A similar [`PciDevice::rom`](device::PciDevice::rom) method is also provided, giving access to
+//! the device's "Expansion ROM".
+//!
+//! Example usage:
+//!
+//! ```no_run
+//! use pci_driver::device::PciDevice;
+//! use pci_driver::regions::{MappedOwningPciRegion, OwningPciRegion, PciRegion, Permissions};
+//!
+//! let device: &dyn PciDevice = unimplemented!();
+//!
+//! let bar_0: OwningPciRegion = device.bar(0).expect("expected device to have BAR 0");
+//! let rom: OwningPciRegion = device.rom().expect("expected device to have Expansion ROM");
+//!
+//! // Non-memory mapped access (always works, may be slower)
+//!
+//! assert!(bar_0.permissions().can_read());
+//! let value = bar_0.read_le_u32(0x20)?;
+//!
+//! // Memory-mapped access using `PciRegion` methods
+//!
+//! assert!(bar_0.permissions() == Permissions::ReadWrite);
+//! assert!(bar_0.is_mappable());
+//! let mapped_bar_0: MappedOwningPciRegion = bar_0.map(..4096, Permissions::Read)?;
+//!
+//! let value = mapped_bar_0.read_le_u32(0x20)?;
+//!
+//! // Memory-mapped access using raw pointers
+//!
+//! let value = u32::from_le(
+//!     unsafe { mapped_bar_0.as_ptr().offset(0x20).cast::<u32>().read_volatile() }
+//! );
 //! # std::io::Result::Ok(())
 //! ```
 //!
