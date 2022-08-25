@@ -9,7 +9,8 @@ use nix::{
 };
 
 use crate::backends::vfio::bindings::{
-    vfio_device_info, vfio_group_status, vfio_region_info, VFIO_BASE, VFIO_TYPE,
+    vfio_device_info, vfio_group_status, vfio_iommu_type1_dma_map, vfio_iommu_type1_dma_unmap,
+    vfio_iommu_type1_info, vfio_region_info, VFIO_BASE, VFIO_TYPE,
 };
 
 /* ---------------------------------------------------------------------------------------------- */
@@ -51,6 +52,24 @@ ioctl_readwrite_bad!(
     vfio_device_get_region_info,
     request_code_none!(VFIO_TYPE, VFIO_BASE + 8),
     vfio_region_info
+);
+
+ioctl_read_bad!(
+    vfio_iommu_get_info,
+    request_code_none!(VFIO_TYPE, VFIO_BASE + 12),
+    vfio_iommu_type1_info
+);
+
+ioctl_write_ptr_bad!(
+    vfio_iommu_map_dma,
+    request_code_none!(VFIO_TYPE, VFIO_BASE + 13),
+    vfio_iommu_type1_dma_map
+);
+
+ioctl_readwrite_bad!(
+    vfio_iommu_unmap_dma,
+    request_code_none!(VFIO_TYPE, VFIO_BASE + 14),
+    vfio_iommu_type1_dma_unmap
 );
 
 /* ---------------------------------------------------------------------------------------------- */

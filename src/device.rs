@@ -5,6 +5,7 @@
 use std::fmt::Debug;
 use std::io;
 
+use crate::iommu::PciIommu;
 use crate::regions::{OwningPciRegion, PciRegion, Permissions, RegionIdentifier};
 
 /* ---------------------------------------------------------------------------------------------- */
@@ -49,6 +50,14 @@ pub trait PciDevice: Debug + Send + Sync + Sealed {
     fn rom(&self) -> Option<OwningPciRegion>;
 
     // TODO: Also expose VGA space?
+
+    /// Returns a thing that lets you manage IOMMU mappings for DMA.
+    ///
+    /// NOTE: Depending on the backend and on how the `PciDevice` was instantiated, this may also
+    /// affect IOMMU mappings for other PCI functions.
+    ///
+    /// The returned value borrows the `PciDevice`.
+    fn iommu(&self) -> PciIommu;
 }
 
 /* ---------------------------------------------------------------------------------------------- */

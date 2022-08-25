@@ -36,6 +36,7 @@ use crate::backends::vfio::regions::{
     set_up_bar_or_rom, set_up_config_space, VfioUnmappedPciRegion,
 };
 use crate::device::{PciDevice, PciDeviceInternal};
+use crate::iommu::PciIommu;
 use crate::regions::{OwningPciRegion, PciRegion, Permissions, RegionIdentifier};
 
 pub use containers::VfioContainer;
@@ -193,6 +194,10 @@ impl PciDevice for VfioPciDevice {
             RegionIdentifier::Rom,
             rom.is_mappable(),
         ))
+    }
+
+    fn iommu(&self) -> PciIommu {
+        self.inner.container.iommu()
     }
 }
 

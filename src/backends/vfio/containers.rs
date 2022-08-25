@@ -2,20 +2,29 @@
 
 /* ---------------------------------------------------------------------------------------------- */
 
+use std::alloc::{self, Layout};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::fs::{File, OpenOptions};
 use std::io::{self, ErrorKind};
 use std::mem;
+use std::ops::Range;
 use std::os::unix::io::AsRawFd;
+use std::os::unix::prelude::RawFd;
 
 use crate::backends::vfio::bindings::{
-    vfio_group_status, VFIO_TYPE1v2_IOMMU, VFIO_API_VERSION, VFIO_GROUP_FLAGS_VIABLE,
+    vfio_group_status, vfio_info_cap_header, vfio_iommu_type1_dma_map, vfio_iommu_type1_dma_unmap,
+    vfio_iommu_type1_info, VFIO_TYPE1v2_IOMMU, __IncompleteArrayField,
+    vfio_iommu_type1_info_cap_iova_range, VFIO_API_VERSION, VFIO_DMA_MAP_FLAG_READ,
+    VFIO_DMA_MAP_FLAG_WRITE, VFIO_GROUP_FLAGS_VIABLE, VFIO_IOMMU_INFO_PGSIZES,
+    VFIO_IOMMU_TYPE1_INFO_CAP_IOVA_RANGE,
 };
 use crate::backends::vfio::ioctl::{
     vfio_check_extension, vfio_get_api_version, vfio_group_get_status, vfio_group_set_container,
-    vfio_set_iommu,
+    vfio_iommu_get_info, vfio_iommu_map_dma, vfio_iommu_unmap_dma, vfio_set_iommu,
 };
+use crate::iommu::{PciIommu, PciIommuInternal};
+use crate::regions::Permissions;
 
 /* ---------------------------------------------------------------------------------------------- */
 
@@ -48,13 +57,115 @@ fn open_group(group_number: u32) -> io::Result<File> {
     Ok(file)
 }
 
+fn get_iommu_info(device_fd: RawFd) -> io::Result<(usize, Box<[Range<u64>]>)> {
+    let mut iommu_info = vfio_iommu_type1_info {
+        argsz: mem::size_of::<vfio_iommu_type1_info>() as u32,
+        flags: 0,
+        iova_pgsizes: 0,
+        cap_offset: 0,
+    };
+
+    unsafe { vfio_iommu_get_info(device_fd, &mut iommu_info)? };
+
+    // get page size
+
+    if iommu_info.flags & VFIO_IOMMU_INFO_PGSIZES == 0 {
+        return Err(io::Error::new(
+            ErrorKind::Other,
+            "VFIO didn't report IOMMU mapping alignment requirement",
+        ));
+    }
+
+    let iova_alignment = 1usize << iommu_info.iova_pgsizes.trailing_zeros();
+
+    // get valid iova ranges
+
+    let valid_iova_ranges = if iommu_info.argsz > mem::size_of::<vfio_iommu_type1_info>() as u32 {
+        // Actual vfio_iommu_type1_info struct is bigger, must re-retrieve it with full argsz.
+
+        let layout = Layout::from_size_align(iommu_info.argsz as usize, 8)
+            .map_err(|_| io::Error::new(ErrorKind::Other, "TODO"))?;
+
+        let bigger_info = unsafe { alloc::alloc(layout) } as *mut vfio_iommu_type1_info;
+        if bigger_info.is_null() {
+            alloc::handle_alloc_error(layout);
+        }
+
+        unsafe {
+            *bigger_info = vfio_iommu_type1_info {
+                argsz: iommu_info.argsz,
+                flags: 0,
+                iova_pgsizes: 0,
+                cap_offset: 0,
+            };
+        }
+
+        unsafe { vfio_iommu_get_info(device_fd, bigger_info)? };
+
+        let mut ranges = get_iommu_cap_iova_ranges(bigger_info)?;
+
+        // validate and adjust ranges
+
+        ranges.sort_by_key(|r| r.start);
+
+        if !ranges.is_empty() && ranges[0].start == 0 {
+            // First valid IOVA is 0x0, which can cause problems with some protocols or hypervisors.
+            // Make the user's life easier by dropping the first page of IOVA space.
+            ranges[0].start = iova_alignment as u64;
+            if ranges[0].start >= ranges[0].end {
+                ranges.remove(0);
+            }
+        }
+
+        if !ranges.windows(2).all(|r| r[0].end <= r[1].start) {
+            return Err(io::Error::new(
+                ErrorKind::Other,
+                "VFIO reported overlapping IOVA ranges",
+            ));
+        }
+
+        ranges.into_boxed_slice()
+    } else {
+        Box::new([])
+    };
+
+    // validate and adjust iova ranges
+
+    Ok((iova_alignment, valid_iova_ranges))
+}
+
+fn get_iommu_cap_iova_ranges(info: *const vfio_iommu_type1_info) -> io::Result<Vec<Range<u64>>> {
+    let mut offset = unsafe { *info }.cap_offset as usize;
+
+    while offset != 0 {
+        let header = unsafe { info.cast::<u8>().add(offset).cast::<vfio_info_cap_header>() };
+
+        if unsafe { *header }.id as u32 == VFIO_IOMMU_TYPE1_INFO_CAP_IOVA_RANGE {
+            let cap = header.cast::<vfio_iommu_type1_info_cap_iova_range>();
+            let ranges = unsafe { (*cap).iova_ranges.as_slice((*cap).nr_iovas as usize) };
+            let ranges = ranges.iter().map(|range| range.start..range.end).collect();
+            return Ok(ranges);
+        }
+
+        offset = unsafe { *header }.next as usize;
+    }
+
+    Err(io::Error::new(
+        ErrorKind::Other,
+        "VFIO did not provide information about valid IOVA ranges",
+    ))
+}
+
 /* ---------------------------------------------------------------------------------------------- */
 
 /// A VFIO container representing an IOMMU context that may contain zero or more VFIO groups.
 #[derive(Debug)]
 pub struct VfioContainer {
+    file: File,
     group_numbers: Box<[u32]>,
     pub(crate) groups: HashMap<u32, File>,
+    iommu_iova_alignment: usize,
+    iommu_valid_iova_ranges: Box<[Range<u64>]>,
 }
 
 impl VfioContainer {
@@ -114,11 +225,18 @@ impl VfioContainer {
 
         unsafe { vfio_set_iommu(fd, VFIO_TYPE1v2_IOMMU as i32)? };
 
+        // get IOMMU info
+
+        let (iommu_iova_alignment, iommu_valid_iova_ranges) = get_iommu_info(fd)?;
+
         // success
 
         Ok(VfioContainer {
+            file,
             group_numbers,
             groups,
+            iommu_iova_alignment,
+            iommu_valid_iova_ranges,
         })
     }
 
@@ -127,6 +245,79 @@ impl VfioContainer {
     /// In ascending order, without duplicates.
     pub fn groups(&self) -> &[u32] {
         &self.group_numbers
+    }
+
+    /// Returns a thing that lets you manage IOMMU mappings for DMA for all devices in all groups
+    /// that belong to this container.
+    pub fn iommu(&self) -> PciIommu {
+        PciIommu { internal: self }
+    }
+}
+
+impl PciIommuInternal for VfioContainer {
+    fn alignment(&self) -> usize {
+        self.iommu_iova_alignment
+    }
+
+    fn valid_iova_ranges(&self) -> &[Range<u64>] {
+        &self.iommu_valid_iova_ranges
+    }
+
+    unsafe fn map(
+        &self,
+        iova: u64,
+        size: usize,
+        address: *const u8,
+        device_permissions: Permissions,
+    ) -> io::Result<()> {
+        // map region
+
+        let flags = match device_permissions {
+            Permissions::Read => VFIO_DMA_MAP_FLAG_READ,
+            Permissions::Write => VFIO_DMA_MAP_FLAG_WRITE,
+            Permissions::ReadWrite => VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE,
+        };
+
+        let dma_map = vfio_iommu_type1_dma_map {
+            argsz: mem::size_of::<vfio_iommu_type1_dma_map>() as u32,
+            flags,
+            vaddr: address as u64,
+            iova,
+            size: size as u64,
+        };
+
+        unsafe { vfio_iommu_map_dma(self.file.as_raw_fd(), &dma_map) }.map_err(|e| {
+            io::Error::new(
+                ErrorKind::Other,
+                format!(
+                    "Failed to set up IOMMU mapping process memory [{:#x}, {:#x}) to device \
+                    memory [{:#x}, {:#x}): {}",
+                    address as usize,
+                    address as usize + size,
+                    iova,
+                    iova + size as u64,
+                    e
+                ),
+            )
+        })?;
+
+        // success
+
+        Ok(())
+    }
+
+    fn unmap(&self, iova: u64, size: usize) -> io::Result<()> {
+        let mut dma_unmap = vfio_iommu_type1_dma_unmap {
+            argsz: mem::size_of::<vfio_iommu_type1_dma_unmap>() as u32,
+            flags: 0,
+            iova,
+            size: size as u64,
+            data: __IncompleteArrayField::new(),
+        };
+
+        unsafe { vfio_iommu_unmap_dma(self.file.as_raw_fd(), &mut dma_unmap)? };
+
+        Ok(())
     }
 }
 

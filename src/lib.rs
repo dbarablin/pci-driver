@@ -7,7 +7,8 @@
 //!
 //! 1. Access its Configuration Space;
 //! 2. Access the regions defined by its Base Address Registers (BARs);
-//! 3. Access its Expansion ROM.
+//! 3. Access its Expansion ROM;
+//! 4. Add and remove mappings from the IOMMU that controls its DMA operations.
 //!
 //! Implementations of this trait are called _backends_. For now, a single
 //! [`VfioPciDevice`](backends::vfio::VfioPciDevice) backend is provided, which relies on Linux's
@@ -88,6 +89,30 @@
 //! # std::io::Result::Ok(())
 //! ```
 //!
+//! ## IOMMU
+//!
+//! The [`PciDevice::iommu`](device::PciDevice::iommu) method returns a
+//! [`PciIommu`](iommu::PciIommu) value, which can in turn be used to manipulate IOMMU mapping
+//! affecting the device.
+//!
+//! Example usage:
+//!
+//! ```no_run
+//! use pci_driver::device::PciDevice;
+//! use pci_driver::regions::Permissions;
+//!
+//! let device: &dyn PciDevice = unimplemented!();
+//!
+//! let iova: u64 = 0x12345678;
+//! let region_ptr: *const u8 = unimplemented!();
+//! let region_len: usize = 4096;
+//!
+//! unsafe { device.iommu().map(iova, region_len, region_ptr, Permissions::ReadWrite) };
+//! // ...
+//! unsafe { device.iommu().unmap(iova, region_len) };
+//! # std::io::Result::Ok(())
+//! ```
+//!
 //! ## VFIO backend specificities
 //!
 //! In the following example, devices 0000:00:01.0 and 0000:00:02.0 belong to VFIO group 42, device
@@ -96,12 +121,28 @@
 //! ```no_run
 //! use std::sync::Arc;
 //! use pci_driver::backends::vfio::{VfioContainer, VfioPciDevice};
+//! use pci_driver::device::PciDevice;
+//! use pci_driver::regions::Permissions;
 //!
 //! let container: Arc<VfioContainer> = Arc::new(VfioContainer::new(&[42, 123])?);
 //!
 //! let device_a = VfioPciDevice::open_in_container("/sys/bus/pci/devices/0000:00:01.0", Arc::clone(&container))?;
 //! let device_b = VfioPciDevice::open_in_container("/sys/bus/pci/devices/0000:00:02.0", Arc::clone(&container))?;
 //! let device_c = VfioPciDevice::open_in_container("/sys/bus/pci/devices/0000:00:03.0", Arc::clone(&container))?;
+//!
+//! unsafe {
+//!     let iova: u64 = 0x12345678;
+//!     let region_ptr: *const u8 = unimplemented!();
+//!     let region_len: usize = 4096;
+//!
+//!     // All of the following calls are equivalent.
+//!
+//!     container.iommu().map(iova, region_len, region_ptr, Permissions::ReadWrite);
+//!
+//!     device_a.iommu().map(iova, region_len, region_ptr, Permissions::ReadWrite);
+//!     device_b.iommu().map(iova, region_len, region_ptr, Permissions::ReadWrite);
+//!     device_c.iommu().map(iova, region_len, region_ptr, Permissions::ReadWrite);
+//! }
 //!
 //! // Shorthand for when a device is the only one (that we care about) in its group, and the group
 //! // is the only one in its container
@@ -120,6 +161,7 @@
 
 pub mod backends;
 pub mod device;
+pub mod iommu;
 pub mod regions;
 
 /* ---------------------------------------------------------------------------------------------- */
