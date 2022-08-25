@@ -17,25 +17,32 @@ mod ioctl;
 mod regions;
 
 use nix::sys::mman::{mmap, munmap, MapFlags, ProtFlags};
+use std::alloc::{self, Layout};
 use std::ffi::CString;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{self, ErrorKind};
-use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::prelude::OsStrExt;
 use std::path::Path;
 use std::sync::Arc;
 use std::{mem, ptr};
 
 use crate::backends::vfio::bindings::{
-    vfio_device_info, VFIO_DEVICE_FLAGS_PCI, VFIO_PCI_BAR0_REGION_INDEX,
-    VFIO_PCI_BAR5_REGION_INDEX, VFIO_PCI_CONFIG_REGION_INDEX, VFIO_PCI_ROM_REGION_INDEX,
+    __IncompleteArrayField, vfio_device_info, vfio_irq_info, vfio_irq_set, VFIO_DEVICE_FLAGS_PCI,
+    VFIO_IRQ_INFO_EVENTFD, VFIO_IRQ_SET_ACTION_TRIGGER, VFIO_IRQ_SET_DATA_EVENTFD,
+    VFIO_IRQ_SET_DATA_NONE, VFIO_PCI_BAR0_REGION_INDEX, VFIO_PCI_BAR5_REGION_INDEX,
+    VFIO_PCI_CONFIG_REGION_INDEX, VFIO_PCI_INTX_IRQ_INDEX, VFIO_PCI_MSIX_IRQ_INDEX,
+    VFIO_PCI_MSI_IRQ_INDEX, VFIO_PCI_ROM_REGION_INDEX,
 };
-use crate::backends::vfio::ioctl::{vfio_device_get_info, vfio_group_get_device_fd};
+use crate::backends::vfio::ioctl::{
+    vfio_device_get_info, vfio_device_get_irq_info, vfio_device_set_irqs, vfio_group_get_device_fd,
+};
 use crate::backends::vfio::regions::{
     set_up_bar_or_rom, set_up_config_space, VfioUnmappedPciRegion,
 };
 use crate::device::{PciDevice, PciDeviceInternal};
+use crate::interrupts::{PciInterruptKind, PciInterrupts};
 use crate::iommu::PciIommu;
 use crate::regions::{OwningPciRegion, PciRegion, Permissions, RegionIdentifier};
 
@@ -132,9 +139,35 @@ impl VfioPciDevice {
 
         if device_info.flags & VFIO_DEVICE_FLAGS_PCI == 0
             || device_info.num_regions < VFIO_PCI_CONFIG_REGION_INDEX + 1
+            || device_info.num_irqs < VFIO_PCI_MSIX_IRQ_INDEX + 1
         {
             return Err(io::Error::new(ErrorKind::Other, "TODO"));
         }
+
+        // get interrupt info
+
+        let get_max_interrupts = |index| {
+            let mut irq_info = vfio_irq_info {
+                argsz: mem::size_of::<vfio_irq_info>() as u32,
+                flags: 0,
+                index,
+                count: 0,
+            };
+
+            unsafe { vfio_device_get_irq_info(device_file.as_raw_fd(), &mut irq_info)? };
+
+            if irq_info.flags & VFIO_IRQ_INFO_EVENTFD == 0 {
+                return Err(io::Error::new(ErrorKind::Other, "TODO"));
+            }
+
+            Ok(irq_info.count as usize)
+        };
+
+        let max_interrupts = [
+            get_max_interrupts(VFIO_PCI_INTX_IRQ_INDEX)?,
+            get_max_interrupts(VFIO_PCI_MSI_IRQ_INDEX)?,
+            get_max_interrupts(VFIO_PCI_MSIX_IRQ_INDEX)?,
+        ];
 
         // set up config space
 
@@ -158,6 +191,7 @@ impl VfioPciDevice {
                 config_region,
                 bars,
                 rom,
+                max_interrupts,
             }),
         })
     }
@@ -199,6 +233,12 @@ impl PciDevice for VfioPciDevice {
     fn iommu(&self) -> PciIommu {
         self.inner.container.iommu()
     }
+
+    fn interrupts(&self) -> PciInterrupts {
+        PciInterrupts {
+            device: &*self.inner,
+        }
+    }
 }
 
 /* ---------------------------------------------------------------------------------------------- */
@@ -212,6 +252,8 @@ struct VfioPciDeviceInner {
     config_region: VfioUnmappedPciRegion,
     bars: Box<[Option<Arc<VfioUnmappedPciRegion>>]>,
     rom: Option<Arc<VfioUnmappedPciRegion>>,
+
+    max_interrupts: [usize; 3],
 }
 
 impl PciDeviceInternal for VfioPciDeviceInner {
@@ -254,6 +296,84 @@ impl PciDeviceInternal for VfioPciDeviceInner {
     unsafe fn region_unmap(&self, _identifier: RegionIdentifier, address: *mut u8, size: usize) {
         // TODO: Do something other than crash on failure?
         unsafe { munmap(address.cast(), size) }.unwrap();
+    }
+
+    // Interrupts
+
+    fn interrupts_max(&self, kind: PciInterruptKind) -> usize {
+        self.max_interrupts[kind as usize]
+    }
+
+    fn interrupts_enable(&self, kind: PciInterruptKind, eventfds: &[RawFd]) -> io::Result<()> {
+        if eventfds.len() > self.max_interrupts[kind as usize] {
+            return Err(io::Error::new(ErrorKind::Other, "TODO"));
+        }
+
+        // allocate memory for vfio_irq_set
+
+        let eventfds_size = eventfds.len() * mem::size_of::<i32>();
+        let total_size = mem::size_of::<vfio_irq_set>() + eventfds_size;
+
+        let layout = Layout::from_size_align(total_size, 4)
+            .map_err(|_| io::Error::new(ErrorKind::Other, "TODO"))?;
+
+        let mem = unsafe { alloc::alloc(layout) };
+
+        if mem.is_null() {
+            alloc::handle_alloc_error(layout);
+        }
+
+        // initialize vfio_irq_set
+
+        let irq_set = mem as *mut vfio_irq_set;
+
+        unsafe {
+            (*irq_set).argsz = total_size as u32;
+            (*irq_set).flags = VFIO_IRQ_SET_DATA_EVENTFD | VFIO_IRQ_SET_ACTION_TRIGGER;
+            (*irq_set).index = interrupt_index_from_kind(kind);
+            (*irq_set).start = 0;
+            (*irq_set).count = eventfds.len() as u32;
+        }
+
+        let eventfd_mem_iter = unsafe {
+            (*irq_set)
+                .data
+                .as_mut_slice(eventfds_size)
+                .chunks_exact_mut(4)
+        };
+
+        for (mem, eventfd) in eventfd_mem_iter.zip(eventfds) {
+            mem.copy_from_slice(&eventfd.to_ne_bytes());
+        }
+
+        // enable interrupt vectors
+
+        unsafe { vfio_device_set_irqs(self.file.as_raw_fd(), irq_set)? };
+
+        Ok(())
+    }
+
+    fn interrupts_disable(&self, kind: PciInterruptKind) -> io::Result<()> {
+        let irq_set = vfio_irq_set {
+            argsz: mem::size_of::<vfio_irq_set>() as u32,
+            flags: VFIO_IRQ_SET_DATA_NONE | VFIO_IRQ_SET_ACTION_TRIGGER,
+            index: interrupt_index_from_kind(kind),
+            start: 0,
+            count: 0,
+            data: __IncompleteArrayField::new(),
+        };
+
+        unsafe { vfio_device_set_irqs(self.file.as_raw_fd(), &irq_set)? };
+
+        Ok(())
+    }
+}
+
+fn interrupt_index_from_kind(kind: PciInterruptKind) -> u32 {
+    match kind {
+        PciInterruptKind::Intx => VFIO_PCI_INTX_IRQ_INDEX,
+        PciInterruptKind::Msi => VFIO_PCI_MSI_IRQ_INDEX,
+        PciInterruptKind::MsiX => VFIO_PCI_MSIX_IRQ_INDEX,
     }
 }
 

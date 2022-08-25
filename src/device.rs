@@ -4,7 +4,9 @@
 
 use std::fmt::Debug;
 use std::io;
+use std::os::unix::io::RawFd;
 
+use crate::interrupts::{PciInterruptKind, PciInterrupts};
 use crate::iommu::PciIommu;
 use crate::regions::{OwningPciRegion, PciRegion, Permissions, RegionIdentifier};
 
@@ -58,6 +60,11 @@ pub trait PciDevice: Debug + Send + Sync + Sealed {
     ///
     /// The returned value borrows the `PciDevice`.
     fn iommu(&self) -> PciIommu;
+
+    /// Returns a thing that lets you manage interrupts.
+    ///
+    /// The returned value borrows the `PciDevice`.
+    fn interrupts(&self) -> PciInterrupts;
 }
 
 /* ---------------------------------------------------------------------------------------------- */
@@ -74,6 +81,12 @@ pub(crate) trait PciDeviceInternal: Debug + Send + Sync {
     ) -> io::Result<*mut u8>;
 
     unsafe fn region_unmap(&self, identifier: RegionIdentifier, address: *mut u8, length: usize);
+
+    // Interrupts
+
+    fn interrupts_max(&self, kind: PciInterruptKind) -> usize;
+    fn interrupts_enable(&self, kind: PciInterruptKind, eventfds: &[RawFd]) -> io::Result<()>;
+    fn interrupts_disable(&self, kind: PciInterruptKind) -> io::Result<()>;
 }
 
 /* ---------------------------------------------------------------------------------------------- */

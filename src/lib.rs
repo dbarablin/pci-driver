@@ -8,7 +8,8 @@
 //! 1. Access its Configuration Space;
 //! 2. Access the regions defined by its Base Address Registers (BARs);
 //! 3. Access its Expansion ROM;
-//! 4. Add and remove mappings from the IOMMU that controls its DMA operations.
+//! 4. Add and remove mappings from the IOMMU that controls its DMA operations;
+//! 5. Configure its INTx, MSI, and MSI-X interrupt vectors.
 //!
 //! Implementations of this trait are called _backends_. For now, a single
 //! [`VfioPciDevice`](backends::vfio::VfioPciDevice) backend is provided, which relies on Linux's
@@ -113,6 +114,36 @@
 //! # std::io::Result::Ok(())
 //! ```
 //!
+//! ## Interrupts
+//!
+//! The [`PciDevice::interrupts`](device::PciDevice::interrupts) method returns a
+//! [`PciInterrupts`](interrupts::PciInterrupts) value, which provides control over the device's
+//! interrupt vectors. It allows you to associate specific interrupt vectors with eventfd
+//! descriptors, and to undo that association.
+//!
+//! Example usage:
+//!
+//! ```no_run
+//! use std::os::unix::io::RawFd;
+//! use pci_driver::device::PciDevice;
+//!
+//! let device: &dyn PciDevice = unimplemented!();
+//! let eventfds: &[RawFd] = unimplemented!();
+//!
+//! let max_enabled_intx_vectors = device.interrupts().intx().max();
+//! device.interrupts().intx().enable(eventfds)?;
+//! device.interrupts().intx().disable()?;
+//!
+//! let max_enabled_msi_vectors = device.interrupts().msi().max();
+//! device.interrupts().msi().enable(eventfds)?;
+//! device.interrupts().msi().disable()?;
+//!
+//! let max_enabled_msi_x_vectors = device.interrupts().msi_x().max();
+//! device.interrupts().msi_x().enable(eventfds)?;
+//! device.interrupts().msi_x().disable()?;
+//! # std::io::Result::Ok(())
+//! ```
+//!
 //! ## VFIO backend specificities
 //!
 //! In the following example, devices 0000:00:01.0 and 0000:00:02.0 belong to VFIO group 42, device
@@ -161,6 +192,7 @@
 
 pub mod backends;
 pub mod device;
+pub mod interrupts;
 pub mod iommu;
 pub mod regions;
 
