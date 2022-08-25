@@ -42,9 +42,15 @@
 //! Still, if you really want to, you can bypass all of this and just read and write directly at
 //! arbitrary offsets of the configuration space.
 //!
+//! The API also makes it easy to iterate over Capabilities and Extended Capabilities, and to find
+//! capabilities with specific Capability IDs, all while providing the same kind of structured
+//! access interface described above.
+//!
 //! Example usage:
 //!
 //! ```no_run
+//! use pci_driver::config::caps::{Capability, PciExpressCapability};
+//! use pci_driver::config::ext_caps::{ExtendedCapability, VendorSpecificExtendedCapability};
 //! use pci_driver::config::PciClassCode;
 //! use pci_driver::device::PciDevice;
 //! use pci_driver::regions::PciRegion;
@@ -69,6 +75,42 @@
 //! let base_class_code: u8 = class_code.base_class_code().read()?;
 //! let sub_class_code: u8 = class_code.sub_class_code().read()?;
 //! let programming_interface: u8 = class_code.programming_interface().read()?;
+//!
+//! // Capabilities
+//!
+//! for cap in device.config().capabilities()? {
+//!     // cap has type UnspecifiedCapability
+//!     let cap_id: u8 = cap.header().capability_id().read()?;
+//! }
+//!
+//! let pcie_cap: Option<PciExpressCapability> = device
+//!     .config()
+//!     .capabilities()?
+//!     .of_type::<PciExpressCapability>()?
+//!     .next();
+//!
+//! if let Some(pcie_cap) = pcie_cap {
+//!     println!("PCI Express device");
+//!     let supports_flr: bool = pcie_cap
+//!         .device_capabilities()
+//!         .function_level_reset_capability()
+//!         .read()?;
+//! } else {
+//!     println!("Conventional PCI device");
+//! }
+//!
+//! // Extended capabilities
+//!
+//! for ext_cap in device.config().extended_capabilities()? {
+//!     // cap has type UnspecifiedExtendedCapability
+//!     let cap_id: u16 = ext_cap.header().capability_id().read()?;
+//! }
+//!
+//! let vendor_specific_ext_caps: Vec<VendorSpecificExtendedCapability> = device
+//!     .config()
+//!     .extended_capabilities()?
+//!     .of_type::<VendorSpecificExtendedCapability>()?
+//!     .collect();
 //! # std::io::Result::Ok(())
 //! ```
 //!

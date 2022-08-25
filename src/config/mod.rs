@@ -2,6 +2,13 @@
 
 /* ---------------------------------------------------------------------------------------------- */
 
+pub mod caps;
+pub mod ext_caps;
+
+use std::io;
+
+use crate::config::caps::PciCapabilities;
+use crate::config::ext_caps::PciExtendedCapabilities;
 use crate::regions::structured::{PciRegisterRo, PciRegisterRw};
 use crate::{pci_bit_field, pci_struct};
 
@@ -30,6 +37,22 @@ pci_struct! {
         interrupt_pin       @ 0x3d : PciRegisterRo<'a, u8>,
         min_gnt             @ 0x3e : PciRegisterRo<'a, u8>,
         max_lat             @ 0x3f : PciRegisterRo<'a, u8>,
+    }
+}
+
+impl<'a> PciConfig<'a> {
+    /// Returns a thing that lets you access the PCI Capabilities.
+    ///
+    /// Calling this will (re)scan all Capabilities, which is why it can fail.
+    pub fn capabilities(&self) -> io::Result<PciCapabilities<'a>> {
+        PciCapabilities::backed_by(*self)
+    }
+
+    /// Returns a thing that lets you access the PCI Extended Capabilities.
+    ///
+    /// Calling this will (re)scan all Extended Capabilities, which is why it can fail.
+    pub fn extended_capabilities(&self) -> io::Result<PciExtendedCapabilities<'a>> {
+        PciExtendedCapabilities::backed_by(*self)
     }
 }
 
