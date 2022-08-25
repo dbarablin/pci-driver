@@ -65,6 +65,18 @@ pub trait PciDevice: Debug + Send + Sync + Sealed {
     ///
     /// The returned value borrows the `PciDevice`.
     fn interrupts(&self) -> PciInterrupts;
+
+    /// Reset this function, and only it.
+    ///
+    /// This will fail if it would be necessary to reset other functions or devices as well to get
+    /// this one to be reset (probably can only happen with multi-function devices that don't
+    /// support Function-Level Reset).
+    ///
+    /// This can also fail for other unspecified reasons.
+    ///
+    /// TODO: Should probably advertise whether this granularity of reset is supported, so the user
+    /// doesn't have to try resetting to find out.
+    fn reset(&self) -> io::Result<()>;
 }
 
 /* ---------------------------------------------------------------------------------------------- */

@@ -252,6 +252,21 @@ impl VfioContainer {
     pub fn iommu(&self) -> PciIommu {
         PciIommu { internal: self }
     }
+
+    /// Tries to reset all the PCI functions in all the VFIO groups that `self` refers to.
+    ///
+    /// This requires that the user has "ownership" over all the affected functions / permissions to
+    /// do it.
+    ///
+    /// TODO: Reset granularity might not match container granularity. Will probably need to expose
+    /// reset topology properly eventually.
+    ///
+    /// TODO: Should probably advertise whether this granularity of reset is supported, so the user
+    /// doesn't have to try resetting to find out.
+    pub fn reset(&self) -> io::Result<()> {
+        // TODO: Implement.
+        Err(io::Error::new(ErrorKind::Other, "not yet implemented"))
+    }
 }
 
 impl PciIommuInternal for VfioContainer {

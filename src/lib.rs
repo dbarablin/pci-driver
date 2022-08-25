@@ -9,7 +9,8 @@
 //! 2. Access the regions defined by its Base Address Registers (BARs);
 //! 3. Access its Expansion ROM;
 //! 4. Add and remove mappings from the IOMMU that controls its DMA operations;
-//! 5. Configure its INTx, MSI, and MSI-X interrupt vectors.
+//! 5. Configure its INTx, MSI, and MSI-X interrupt vectors;
+//! 6. Reset it.
 //!
 //! Implementations of this trait are called _backends_. For now, a single
 //! [`VfioPciDevice`](backends::vfio::VfioPciDevice) backend is provided, which relies on Linux's
@@ -179,6 +180,14 @@
 //! // is the only one in its container
 //!
 //! let device = VfioPciDevice::open("/sys/bus/pci/devices/0000:00:01.0")?;
+//!
+//! // Resetting a PCI function, which may not be supported
+//!
+//! device.reset()?;
+//!
+//! // Resetting a whole container, which may also not be supported
+//!
+//! device.container().reset()?;
 //! # std::io::Result::Ok(())
 //! ```
 

@@ -66,6 +66,8 @@ ioctl_write_ptr_bad!(
     vfio_irq_set
 );
 
+ioctl_none!(vfio_device_reset, VFIO_TYPE, VFIO_BASE + 11);
+
 ioctl_read_bad!(
     vfio_iommu_get_info,
     request_code_none!(VFIO_TYPE, VFIO_BASE + 12),

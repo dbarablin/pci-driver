@@ -36,7 +36,8 @@ use crate::backends::vfio::bindings::{
     VFIO_PCI_MSI_IRQ_INDEX, VFIO_PCI_ROM_REGION_INDEX,
 };
 use crate::backends::vfio::ioctl::{
-    vfio_device_get_info, vfio_device_get_irq_info, vfio_device_set_irqs, vfio_group_get_device_fd,
+    vfio_device_get_info, vfio_device_get_irq_info, vfio_device_reset, vfio_device_set_irqs,
+    vfio_group_get_device_fd,
 };
 use crate::backends::vfio::regions::{
     set_up_bar_or_rom, set_up_config_space, VfioUnmappedPciRegion,
@@ -238,6 +239,11 @@ impl PciDevice for VfioPciDevice {
         PciInterrupts {
             device: &*self.inner,
         }
+    }
+
+    fn reset(&self) -> io::Result<()> {
+        unsafe { vfio_device_reset(self.inner.file.as_raw_fd())? };
+        Ok(())
     }
 }
 
