@@ -15,7 +15,7 @@ use crate::backends::vfio::bindings::{
     VFIO_REGION_INFO_FLAG_READ, VFIO_REGION_INFO_FLAG_WRITE,
 };
 use crate::backends::vfio::ioctl::vfio_device_get_region_info;
-use crate::regions::{PciRegion, Permissions};
+use crate::regions::{AsPciSubregion, PciRegion, PciSubregion, Permissions};
 
 /* ---------------------------------------------------------------------------------------------- */
 
@@ -128,6 +128,13 @@ impl PciRegion for VfioUnmappedPciRegion {
 
     fn write_le_u32(&self, offset: u64, value: u32) -> io::Result<()> {
         self.write(4, offset, &value.to_le_bytes())
+    }
+}
+
+impl<'a> AsPciSubregion<'a> for &'a VfioUnmappedPciRegion {
+    fn as_subregion(&self) -> PciSubregion<'a> {
+        let region: &'a dyn PciRegion = *self;
+        <&dyn PciRegion>::as_subregion(&region)
     }
 }
 

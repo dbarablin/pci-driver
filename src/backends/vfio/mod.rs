@@ -42,10 +42,11 @@ use crate::backends::vfio::ioctl::{
 use crate::backends::vfio::regions::{
     set_up_bar_or_rom, set_up_config_space, VfioUnmappedPciRegion,
 };
+use crate::config::PciConfig;
 use crate::device::{PciDevice, PciDeviceInternal};
 use crate::interrupts::{PciInterruptKind, PciInterrupts};
 use crate::iommu::PciIommu;
-use crate::regions::{OwningPciRegion, PciRegion, Permissions, RegionIdentifier};
+use crate::regions::{BackedByPciSubregion, OwningPciRegion, Permissions, RegionIdentifier};
 
 pub use containers::VfioContainer;
 
@@ -205,8 +206,8 @@ impl VfioPciDevice {
 
 impl crate::device::Sealed for VfioPciDevice {}
 impl PciDevice for VfioPciDevice {
-    fn config(&self) -> &dyn PciRegion {
-        &self.inner.config_region
+    fn config(&self) -> PciConfig {
+        PciConfig::backed_by(&self.inner.config_region)
     }
 
     fn bar(&self, index: usize) -> Option<OwningPciRegion> {

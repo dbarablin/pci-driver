@@ -6,9 +6,10 @@ use std::fmt::Debug;
 use std::io;
 use std::os::unix::io::RawFd;
 
+use crate::config::PciConfig;
 use crate::interrupts::{PciInterruptKind, PciInterrupts};
 use crate::iommu::PciIommu;
-use crate::regions::{OwningPciRegion, PciRegion, Permissions, RegionIdentifier};
+use crate::regions::{OwningPciRegion, Permissions, RegionIdentifier};
 
 /* ---------------------------------------------------------------------------------------------- */
 
@@ -27,7 +28,7 @@ pub trait PciDevice: Debug + Send + Sync + Sealed {
     /// Returns a thing that lets you access the PCI configuration space.
     ///
     /// The returned value borrows the `PciDevice`.
-    fn config(&self) -> &dyn PciRegion;
+    fn config(&self) -> PciConfig;
 
     /// Returns a region that corresponds to the Base Address Register (BAR) with the given index,
     /// or `None` if there is no such BAR or it is unused by the device.
