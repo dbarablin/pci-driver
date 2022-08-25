@@ -127,3 +127,66 @@ pci_bit_field! {
 }
 
 /* ---------------------------------------------------------------------------------------------- */
+
+#[cfg(test)]
+mod tests {
+    use crate::backends::mock::MockPciDevice;
+    use crate::config::caps::Capability;
+    use crate::config::ext_caps::ExtendedCapability;
+    use crate::device::PciDevice;
+
+    #[test]
+    fn test_lifetimes() {
+        let device: &dyn PciDevice = &MockPciDevice;
+
+        let value_1 = device.config().command().io_space_enable();
+        let value_2 = device
+            .config()
+            .capabilities()
+            .unwrap()
+            .iter()
+            .next()
+            .unwrap()
+            .header()
+            .capability_id();
+
+        value_1.read().unwrap();
+        value_2.read().unwrap();
+        value_1.read().unwrap();
+    }
+
+    #[test]
+    fn test_capabilities() {
+        let device: &dyn PciDevice = &MockPciDevice;
+
+        let cap_ids: Vec<_> = device
+            .config()
+            .capabilities()
+            .unwrap()
+            .iter()
+            .map(|cap| cap.header().capability_id().read().unwrap())
+            .collect();
+
+        assert_eq!(cap_ids, vec![0x01, 0x05, 0x10, 0x11]);
+    }
+
+    #[test]
+    fn test_extended_capabilities() {
+        let device: &dyn PciDevice = &MockPciDevice;
+
+        let ext_cap_ids: Vec<_> = device
+            .config()
+            .extended_capabilities()
+            .unwrap()
+            .iter()
+            .map(|cap| cap.header().capability_id().read().unwrap())
+            .collect();
+
+        assert_eq!(
+            ext_cap_ids,
+            vec![0x0001, 0x0003, 0x0004, 0x0019, 0x0018, 0x001e]
+        );
+    }
+}
+
+/* ---------------------------------------------------------------------------------------------- */

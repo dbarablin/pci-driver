@@ -16,3 +16,6 @@ _unsafe-op-in-unsafe-fn = []
 [dependencies]
 nix = { version = "0.24.1", default-features = false, optional = true }
 num-traits = { version = "0.2.15", default-features = false }
+
+[dev-dependencies]
+byte-strings = "0.2.2"
