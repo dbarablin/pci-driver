@@ -1,0 +1,17 @@
+[package]
+name = "pci-driver"
+version = "0.1.0"
+edition = "2018"
+description = "PCI/PCIe driver development library"
+license = "MIT OR Apache-2.0"
+repository = "https://gitlab.com/pci-driver/pci-driver"
+keywords = ["PCI", "PCIe", "driver", "user-space"]
+categories = ["hardware-support"]
+
+[features]
+default = ["vfio"]
+vfio = ["nix/ioctl"]
+_unsafe-op-in-unsafe-fn = []
+
+[dependencies]
+nix = { version = "0.24.1", default-features = false, optional = true }
