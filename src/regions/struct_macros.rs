@@ -4,6 +4,10 @@
 
 /// TODO: Document.
 ///
+/// The optional length is important mostly to make
+/// [`PciRegionSnapshot`](crate::regions::PciRegionSnapshot) only copy the relevant part instead of
+/// a lot more.
+///
 /// TODO: Validate field offsets against length.
 #[macro_export]
 macro_rules! pci_struct {

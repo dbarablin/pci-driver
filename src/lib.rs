@@ -51,9 +51,9 @@
 //! ```no_run
 //! use pci_driver::config::caps::{Capability, PciExpressCapability};
 //! use pci_driver::config::ext_caps::{ExtendedCapability, VendorSpecificExtendedCapability};
-//! use pci_driver::config::PciClassCode;
+//! use pci_driver::config::{PciClassCode, PciConfig};
 //! use pci_driver::device::PciDevice;
-//! use pci_driver::regions::PciRegion;
+//! use pci_driver::regions::{BackedByPciSubregion, PciRegion, PciRegionSnapshot};
 //!
 //! let device: &dyn PciDevice = unimplemented!();
 //!
@@ -111,6 +111,28 @@
 //!     .extended_capabilities()?
 //!     .of_type::<VendorSpecificExtendedCapability>()?
 //!     .collect();
+//!
+//! // Taking snapshot of entire config space, may improve performance if reading many registers
+//!
+//! let config_space_snapshot: PciRegionSnapshot = PciRegionSnapshot::take(device.config())?;
+//! let device_id: u16 = config_space_snapshot.read_le_u16(0x02)?;
+//!
+//! let config_space: PciConfig = PciConfig::backed_by(&config_space_snapshot);
+//! let device_id: u16 = config_space.read_le_u16(0x02)?;
+//! let device_id: u16 = config_space.device_id().read()?;
+//! let memory_space_enable: bool = config_space.command().memory_space_enable().read()?;
+//!
+//! // Taking snapshot only of a specific capability
+//!
+//! let pcie_cap_snapshot: PciRegionSnapshot = PciRegionSnapshot::take(
+//!     config_space
+//!         .capabilities()?
+//!         .of_type::<PciExpressCapability>()?
+//!         .next()
+//!         .expect("not a PCIe device")
+//! )?;
+//!
+//! let pcie_cap = PciExpressCapability::backed_by(&pcie_cap_snapshot)?.unwrap();
 //! # std::io::Result::Ok(())
 //! ```
 //!
@@ -131,7 +153,7 @@
 //!
 //! ```no_run
 //! use pci_driver::device::PciDevice;
-//! use pci_driver::regions::{MappedOwningPciRegion, OwningPciRegion, PciRegion, Permissions};
+//! use pci_driver::regions::{MappedOwningPciRegion, OwningPciRegion, PciRegion, PciRegionSnapshot, Permissions};
 //!
 //! let device: &dyn PciDevice = unimplemented!();
 //!
@@ -156,6 +178,10 @@
 //! let value = u32::from_le(
 //!     unsafe { mapped_bar_0.as_ptr().offset(0x20).cast::<u32>().read_volatile() }
 //! );
+//!
+//! // Taking snapshot of BAR 0
+//!
+//! let bar_0_snapshot: PciRegionSnapshot = PciRegionSnapshot::take(&bar_0)?;
 //! # std::io::Result::Ok(())
 //! ```
 //!

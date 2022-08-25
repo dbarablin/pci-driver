@@ -34,6 +34,10 @@
 //!   - `PciMemoryRegion<'a>` implements `PciRegion`, for all `'a`.
 //!   - `&'a PciMemoryRegion<'b>` implements `AsPciSubregion<'a>`, for all `'a`, `'b`.
 //!
+//! - [`struct PciRegionSnapshot`](PciRegionSnapshot).
+//!   - `PciRegionSnapshot` implements `PciRegion`.
+//!   - `&'a PciRegionSnapshot` implements `AsPciSubregion<'a>`, for all `'a`.
+//!
 //! ## And also
 //!
 //! - [`trait BackedByPciSubregion<'a>`](BackedByPciSubregion).
@@ -735,6 +739,56 @@ impl<'a> AsPciSubregion<'a> for &'a PciMemoryRegion<'_> {
     fn as_subregion(&self) -> PciSubregion<'a> {
         let region: &dyn PciRegion = *self;
         <&dyn PciRegion>::as_subregion(&region)
+    }
+}
+
+/* ---------------------------------------------------------------------------------------------- */
+
+/// Use this to take snapshots of anything that is an [`AsPciSubregion`].
+#[derive(Clone, Debug)]
+pub struct PciRegionSnapshot {
+    buffer: Box<[u8]>,
+    region: PciMemoryRegion<'static>,
+}
+
+impl PciRegionSnapshot {
+    /// Take a snapshot of the given subregion.
+    pub fn take<'a>(as_subregion: impl AsPciSubregion<'a>) -> io::Result<PciRegionSnapshot> {
+        let subregion = as_subregion.as_subregion();
+
+        if subregion.len() > isize::MAX as u64 {
+            return Err(io::Error::new(ErrorKind::Other, "TODO"));
+        }
+
+        let mut buffer = vec![0u8; subregion.len() as usize];
+        subregion.read_bytes(0, &mut buffer)?;
+
+        let mut buffer = buffer.into_boxed_slice();
+        let region = unsafe {
+            PciMemoryRegion::new_raw(buffer.as_mut_ptr(), buffer.len(), Permissions::ReadWrite)
+        };
+
+        Ok(PciRegionSnapshot { buffer, region })
+    }
+}
+
+impl_delegating_pci_region! { PciRegionSnapshot }
+
+impl<'a> AsPciSubregion<'a> for &'a PciRegionSnapshot {
+    fn as_subregion(&self) -> PciSubregion<'a> {
+        (&self.region).as_subregion()
+    }
+}
+
+impl From<PciRegionSnapshot> for Box<[u8]> {
+    fn from(snapshot: PciRegionSnapshot) -> Self {
+        snapshot.buffer
+    }
+}
+
+impl From<PciRegionSnapshot> for Vec<u8> {
+    fn from(snapshot: PciRegionSnapshot) -> Self {
+        Vec::from(snapshot.buffer)
     }
 }
 
