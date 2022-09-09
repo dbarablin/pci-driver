@@ -16,7 +16,8 @@ mod containers;
 mod ioctl;
 mod regions;
 
-use nix::sys::mman::{mmap, munmap, MapFlags, ProtFlags};
+use nix::libc::{mmap64, MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE};
+use nix::sys::mman::munmap;
 use std::alloc::{self, Layout};
 use std::ffi::CString;
 use std::fmt::Debug;
@@ -281,23 +282,27 @@ impl PciDeviceInternal for VfioPciDeviceInner {
         let region = region.as_ref().unwrap();
 
         let prot_flags = match permissions {
-            Permissions::Read => ProtFlags::PROT_READ,
-            Permissions::Write => ProtFlags::PROT_WRITE,
-            Permissions::ReadWrite => ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+            Permissions::Read => PROT_READ,
+            Permissions::Write => PROT_WRITE,
+            Permissions::ReadWrite => PROT_READ | PROT_WRITE,
         };
 
         let address = unsafe {
-            mmap(
+            mmap64(
                 ptr::null_mut(),
                 len,
                 prot_flags,
-                MapFlags::MAP_SHARED,
+                MAP_SHARED,
                 self.file.as_raw_fd(),
                 region.offset_in_device_file() as i64 + offset as i64,
             )
-        }?;
+        };
 
-        Ok(address.cast())
+        if address == MAP_FAILED {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(address.cast())
+        }
     }
 
     unsafe fn region_unmap(&self, _identifier: RegionIdentifier, address: *mut u8, size: usize) {
