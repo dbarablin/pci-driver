@@ -1,10 +1,13 @@
 rust-stable:
   parallel:
     matrix:
-      - PCI_DRIVER_FEATURES:
-        - ""
-        - vfio
-  image: rust:latest
+      - IMAGE:
+          - amd64/rust
+          - i386/rust
+        PCI_DRIVER_FEATURES:
+          - ""
+          - vfio
+  image: $IMAGE:latest
   before_script:
     - rustup component add clippy rustfmt
   script:
@@ -12,6 +15,6 @@ rust-stable:
 
 rust-1.47:
   extends: rust-stable
-  image: rust:1.47
+  image: $IMAGE:1.47
   script:
     - ./test.sh
