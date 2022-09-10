@@ -1,6 +1,6 @@
 [package]
 name = "pci-driver"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2018"
 description = "PCI/PCIe driver development library"
 license = "MIT OR Apache-2.0"
