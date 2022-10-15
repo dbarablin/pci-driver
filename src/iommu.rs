@@ -32,6 +32,11 @@ impl PciIommu<'_> {
         self.internal.valid_iova_ranges()
     }
 
+    /// The maximum number of mappings that may be in effect simultaneously.
+    pub fn max_num_mappings(&self) -> u32 {
+        self.internal.max_num_mappings()
+    }
+
     /// Add the given mapping to the IOMMU.
     ///
     /// - `iova` is the start address of the region in the device's address space.
@@ -71,6 +76,8 @@ pub(crate) trait PciIommuInternal {
     fn alignment(&self) -> usize;
 
     fn valid_iova_ranges(&self) -> &[Range<u64>];
+
+    fn max_num_mappings(&self) -> u32;
 
     unsafe fn map(
         &self,

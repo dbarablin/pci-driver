@@ -15,9 +15,9 @@ use std::os::unix::prelude::RawFd;
 use crate::backends::vfio::bindings::{
     vfio_group_status, vfio_info_cap_header, vfio_iommu_type1_dma_map, vfio_iommu_type1_dma_unmap,
     vfio_iommu_type1_info, VFIO_TYPE1v2_IOMMU, __IncompleteArrayField,
-    vfio_iommu_type1_info_cap_iova_range, VFIO_API_VERSION, VFIO_DMA_MAP_FLAG_READ,
-    VFIO_DMA_MAP_FLAG_WRITE, VFIO_GROUP_FLAGS_VIABLE, VFIO_IOMMU_INFO_PGSIZES,
-    VFIO_IOMMU_TYPE1_INFO_CAP_IOVA_RANGE,
+    vfio_iommu_type1_info_cap_iova_range, vfio_iommu_type1_info_dma_avail, VFIO_API_VERSION,
+    VFIO_DMA_MAP_FLAG_READ, VFIO_DMA_MAP_FLAG_WRITE, VFIO_GROUP_FLAGS_VIABLE,
+    VFIO_IOMMU_INFO_PGSIZES, VFIO_IOMMU_TYPE1_INFO_CAP_IOVA_RANGE, VFIO_IOMMU_TYPE1_INFO_DMA_AVAIL,
 };
 use crate::backends::vfio::ioctl::{
     vfio_check_extension, vfio_get_api_version, vfio_group_get_status, vfio_group_set_container,
@@ -57,7 +57,13 @@ fn open_group(group_number: u32) -> io::Result<File> {
     Ok(file)
 }
 
-fn get_iommu_info(device_fd: RawFd) -> io::Result<(usize, Box<[Range<u64>]>)> {
+struct IommuInfo {
+    iova_alignment: usize,
+    max_num_mappings: u32,
+    valid_iova_ranges: Box<[Range<u64>]>,
+}
+
+fn get_iommu_info(device_fd: RawFd) -> io::Result<IommuInfo> {
     let mut iommu_info = vfio_iommu_type1_info {
         argsz: mem::size_of::<vfio_iommu_type1_info>() as u32,
         flags: 0,
@@ -78,73 +84,80 @@ fn get_iommu_info(device_fd: RawFd) -> io::Result<(usize, Box<[Range<u64>]>)> {
 
     let iova_alignment = 1usize << iommu_info.iova_pgsizes.trailing_zeros();
 
-    // get valid iova ranges
+    // ensure there are capabilities
 
-    let valid_iova_ranges = if iommu_info.argsz > mem::size_of::<vfio_iommu_type1_info>() as u32 {
-        // Actual vfio_iommu_type1_info struct is bigger, must re-retrieve it with full argsz.
+    if iommu_info.argsz <= mem::size_of::<vfio_iommu_type1_info>() as u32 {
+        return Err(io::Error::new(
+            ErrorKind::Other,
+            "VFIO reported no IOMMU capabilities",
+        ));
+    }
 
-        let layout = Layout::from_size_align(iommu_info.argsz as usize, 8)
-            .map_err(|_| io::Error::new(ErrorKind::Other, "TODO"))?;
+    // actual vfio_iommu_type1_info struct is bigger, must re-retrieve it with full argsz
 
-        let bigger_info = unsafe { alloc::alloc(layout) } as *mut vfio_iommu_type1_info;
-        if bigger_info.is_null() {
-            alloc::handle_alloc_error(layout);
+    let layout = Layout::from_size_align(iommu_info.argsz as usize, 8)
+        .map_err(|_| io::Error::new(ErrorKind::Other, "TODO"))?;
+
+    let bigger_info = unsafe { alloc::alloc(layout) } as *mut vfio_iommu_type1_info;
+    if bigger_info.is_null() {
+        alloc::handle_alloc_error(layout);
+    }
+
+    unsafe {
+        *bigger_info = vfio_iommu_type1_info {
+            argsz: iommu_info.argsz,
+            flags: 0,
+            iova_pgsizes: 0,
+            cap_offset: 0,
+        };
+    }
+
+    unsafe { vfio_iommu_get_info(device_fd, bigger_info)? };
+
+    let mut ranges = get_iommu_cap_iova_ranges(bigger_info)?;
+
+    // validate and adjust ranges
+
+    ranges.sort_by_key(|r| r.start);
+
+    if !ranges.is_empty() && ranges[0].start == 0 {
+        // First valid IOVA is 0x0, which can cause problems with some protocols or hypervisors.
+        // Make the user's life easier by dropping the first page of IOVA space.
+        ranges[0].start = iova_alignment as u64;
+        if ranges[0].start >= ranges[0].end {
+            ranges.remove(0);
         }
+    }
 
-        unsafe {
-            *bigger_info = vfio_iommu_type1_info {
-                argsz: iommu_info.argsz,
-                flags: 0,
-                iova_pgsizes: 0,
-                cap_offset: 0,
-            };
-        }
+    if !ranges.windows(2).all(|r| r[0].end <= r[1].start) {
+        return Err(io::Error::new(
+            ErrorKind::Other,
+            "VFIO reported overlapping IOVA ranges",
+        ));
+    }
 
-        unsafe { vfio_iommu_get_info(device_fd, bigger_info)? };
+    let valid_iova_ranges = ranges.into_boxed_slice();
 
-        let mut ranges = get_iommu_cap_iova_ranges(bigger_info)?;
+    let max_num_mappings = get_iommu_dma_avail(bigger_info)?;
 
-        // validate and adjust ranges
-
-        ranges.sort_by_key(|r| r.start);
-
-        if !ranges.is_empty() && ranges[0].start == 0 {
-            // First valid IOVA is 0x0, which can cause problems with some protocols or hypervisors.
-            // Make the user's life easier by dropping the first page of IOVA space.
-            ranges[0].start = iova_alignment as u64;
-            if ranges[0].start >= ranges[0].end {
-                ranges.remove(0);
-            }
-        }
-
-        if !ranges.windows(2).all(|r| r[0].end <= r[1].start) {
-            return Err(io::Error::new(
-                ErrorKind::Other,
-                "VFIO reported overlapping IOVA ranges",
-            ));
-        }
-
-        ranges.into_boxed_slice()
-    } else {
-        Box::new([])
-    };
-
-    // validate and adjust iova ranges
-
-    Ok((iova_alignment, valid_iova_ranges))
+    Ok(IommuInfo {
+        iova_alignment,
+        max_num_mappings,
+        valid_iova_ranges,
+    })
 }
 
-fn get_iommu_cap_iova_ranges(info: *const vfio_iommu_type1_info) -> io::Result<Vec<Range<u64>>> {
+fn get_iommu_cap(
+    info: *const vfio_iommu_type1_info,
+    id: u32,
+) -> io::Result<*const vfio_info_cap_header> {
     let mut offset = unsafe { *info }.cap_offset as usize;
 
     while offset != 0 {
         let header = unsafe { info.cast::<u8>().add(offset).cast::<vfio_info_cap_header>() };
 
-        if unsafe { *header }.id as u32 == VFIO_IOMMU_TYPE1_INFO_CAP_IOVA_RANGE {
-            let cap = header.cast::<vfio_iommu_type1_info_cap_iova_range>();
-            let ranges = unsafe { (*cap).iova_ranges.as_slice((*cap).nr_iovas as usize) };
-            let ranges = ranges.iter().map(|range| range.start..range.end).collect();
-            return Ok(ranges);
+        if unsafe { *header }.id as u32 == id {
+            return Ok(header);
         }
 
         offset = unsafe { *header }.next as usize;
@@ -152,8 +165,25 @@ fn get_iommu_cap_iova_ranges(info: *const vfio_iommu_type1_info) -> io::Result<V
 
     Err(io::Error::new(
         ErrorKind::Other,
-        "VFIO did not provide information about valid IOVA ranges",
+        format!("VFIO did not provide IOMMU capability with ID {}", id),
     ))
+}
+
+fn get_iommu_cap_iova_ranges(info: *const vfio_iommu_type1_info) -> io::Result<Vec<Range<u64>>> {
+    let cap = get_iommu_cap(info, VFIO_IOMMU_TYPE1_INFO_CAP_IOVA_RANGE)?
+        .cast::<vfio_iommu_type1_info_cap_iova_range>();
+
+    let ranges = unsafe { (*cap).iova_ranges.as_slice((*cap).nr_iovas as usize) };
+    let ranges = ranges.iter().map(|range| range.start..range.end).collect();
+
+    Ok(ranges)
+}
+
+fn get_iommu_dma_avail(info: *const vfio_iommu_type1_info) -> io::Result<u32> {
+    let cap = get_iommu_cap(info, VFIO_IOMMU_TYPE1_INFO_DMA_AVAIL)?
+        .cast::<vfio_iommu_type1_info_dma_avail>();
+
+    Ok(unsafe { (*cap).avail })
 }
 
 /* ---------------------------------------------------------------------------------------------- */
@@ -165,6 +195,7 @@ pub struct VfioContainer {
     group_numbers: Box<[u32]>,
     pub(crate) groups: HashMap<u32, File>,
     iommu_iova_alignment: usize,
+    iommu_max_num_mappings: u32,
     iommu_valid_iova_ranges: Box<[Range<u64>]>,
 }
 
@@ -227,7 +258,7 @@ impl VfioContainer {
 
         // get IOMMU info
 
-        let (iommu_iova_alignment, iommu_valid_iova_ranges) = get_iommu_info(fd)?;
+        let iommu_info = get_iommu_info(fd)?;
 
         // success
 
@@ -235,8 +266,9 @@ impl VfioContainer {
             file,
             group_numbers,
             groups,
-            iommu_iova_alignment,
-            iommu_valid_iova_ranges,
+            iommu_iova_alignment: iommu_info.iova_alignment,
+            iommu_max_num_mappings: iommu_info.max_num_mappings,
+            iommu_valid_iova_ranges: iommu_info.valid_iova_ranges,
         })
     }
 
@@ -276,6 +308,10 @@ impl PciIommuInternal for VfioContainer {
 
     fn valid_iova_ranges(&self) -> &[Range<u64>] {
         &self.iommu_valid_iova_ranges
+    }
+
+    fn max_num_mappings(&self) -> u32 {
+        self.iommu_max_num_mappings
     }
 
     unsafe fn map(

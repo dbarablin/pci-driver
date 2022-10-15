@@ -89,6 +89,10 @@ impl PciIommuInternal for MockPciDevice {
         todo!()
     }
 
+    fn max_num_mappings(&self) -> u32 {
+        todo!()
+    }
+
     unsafe fn map(
         &self,
         _iova: u64,
