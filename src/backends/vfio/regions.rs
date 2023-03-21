@@ -81,7 +81,7 @@ impl VfioUnmappedPciRegion {
 impl crate::regions::Sealed for VfioUnmappedPciRegion {}
 impl PciRegion for VfioUnmappedPciRegion {
     fn len(&self) -> u64 {
-        self.length as u64
+        self.length
     }
 
     fn permissions(&self) -> Permissions {
