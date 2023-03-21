@@ -242,7 +242,7 @@ impl VfioContainer {
 
         // check extension
 
-        if unsafe { vfio_check_extension(fd, VFIO_TYPE1v2_IOMMU as i32)? } != 1 {
+        if unsafe { vfio_check_extension(fd, VFIO_TYPE1v2_IOMMU as usize)? } != 1 {
             return Err(io::Error::new(ErrorKind::InvalidInput, "TODO"));
         }
 
@@ -254,7 +254,7 @@ impl VfioContainer {
 
         // enable IOMMU
 
-        unsafe { vfio_set_iommu(fd, VFIO_TYPE1v2_IOMMU as i32)? };
+        unsafe { vfio_set_iommu(fd, VFIO_TYPE1v2_IOMMU as usize)? };
 
         // get IOMMU info
 

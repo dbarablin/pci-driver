@@ -16,8 +16,7 @@ mod containers;
 mod ioctl;
 mod regions;
 
-use nix::libc::{mmap64, MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE};
-use nix::sys::mman::munmap;
+use libc::{mmap64, munmap, MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE};
 use std::alloc::{self, Layout};
 use std::ffi::CString;
 use std::fmt::Debug;
@@ -305,8 +304,14 @@ impl PciDeviceInternal for VfioPciDeviceInner {
     }
 
     unsafe fn region_unmap(&self, _identifier: RegionIdentifier, address: *mut u8, size: usize) {
+        let result = if unsafe { munmap(address.cast(), size) } == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        };
+
         // TODO: Do something other than crash on failure?
-        unsafe { munmap(address.cast(), size) }.unwrap();
+        result.unwrap();
     }
 
     // Interrupts
