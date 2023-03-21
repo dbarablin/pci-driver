@@ -179,7 +179,6 @@ impl VfioPciDevice {
         // set up BARs and ROM
 
         let bars = (VFIO_PCI_BAR0_REGION_INDEX..=VFIO_PCI_BAR5_REGION_INDEX)
-            .into_iter()
             .map(|index| set_up_bar_or_rom(&device_file, index))
             .collect::<io::Result<_>>()?;
 
