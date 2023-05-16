@@ -440,6 +440,8 @@ pub mod config;
 pub mod device;
 pub mod interrupts;
 pub mod iommu;
+#[cfg(feature = "test-mocks")]
+pub mod mocks;
 pub mod regions;
 
 /* ---------------------------------------------------------------------------------------------- */
