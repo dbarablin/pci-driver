@@ -92,9 +92,9 @@ impl VfioPciDevice {
     /// Note that this only works if no other [`VfioContainer`] already contains the device's group,
     /// and so you must use [`VfioPciDevice::open_in_container`] if you want to drive several
     /// devices from the same VFIO group.
-    pub fn open<P: AsRef<Path>>(sysfs_path: P) -> io::Result<VfioPciDevice> {
+    pub fn open<P: AsRef<Path>>(sysfs_path: P, noiommu: bool) -> io::Result<VfioPciDevice> {
         let group_number = get_device_group_number(&sysfs_path)?;
-        let container = Arc::new(VfioContainer::new(&[group_number])?);
+        let container = Arc::new(VfioContainer::new(&[group_number], noiommu)?);
 
         Self::open_in_container(sysfs_path, container)
     }
@@ -231,7 +231,7 @@ impl PciDevice for VfioPciDevice {
         ))
     }
 
-    fn iommu(&self) -> PciIommu {
+    fn iommu(&self) -> Option<PciIommu> {
         self.inner.container.iommu()
     }
 

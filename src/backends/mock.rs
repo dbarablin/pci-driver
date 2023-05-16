@@ -34,8 +34,8 @@ impl PciDevice for MockPciDevice {
         todo!()
     }
 
-    fn iommu(&self) -> PciIommu {
-        PciIommu { internal: self }
+    fn iommu(&self) -> Option<PciIommu> {
+        Some(PciIommu { internal: self })
     }
 
     fn interrupts(&self) -> PciInterrupts {

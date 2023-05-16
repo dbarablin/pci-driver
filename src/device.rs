@@ -60,7 +60,7 @@ pub trait PciDevice: Debug + Send + Sync + Sealed {
     /// affect IOMMU mappings for other PCI functions.
     ///
     /// The returned value borrows the `PciDevice`.
-    fn iommu(&self) -> PciIommu;
+    fn iommu(&self) -> Option<PciIommu>;
 
     /// Returns a thing that lets you manage interrupts.
     ///

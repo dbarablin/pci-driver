@@ -18,6 +18,7 @@ use crate::backends::vfio::bindings::{
     vfio_iommu_type1_info_cap_iova_range, vfio_iommu_type1_info_dma_avail, VFIO_API_VERSION,
     VFIO_DMA_MAP_FLAG_READ, VFIO_DMA_MAP_FLAG_WRITE, VFIO_GROUP_FLAGS_VIABLE,
     VFIO_IOMMU_INFO_PGSIZES, VFIO_IOMMU_TYPE1_INFO_CAP_IOVA_RANGE, VFIO_IOMMU_TYPE1_INFO_DMA_AVAIL,
+    VFIO_NOIOMMU_IOMMU,
 };
 use crate::backends::vfio::ioctl::{
     vfio_check_extension, vfio_get_api_version, vfio_group_get_status, vfio_group_set_container,
@@ -28,13 +29,14 @@ use crate::regions::Permissions;
 
 /* ---------------------------------------------------------------------------------------------- */
 
-fn open_group(group_number: u32) -> io::Result<File> {
+fn open_group(group_number: u32, noiommu: bool) -> io::Result<File> {
     // open group
 
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(format!("/dev/vfio/{}", group_number))?;
+    let file = OpenOptions::new().read(true).write(true).open(format!(
+        "/dev/vfio/{}{}",
+        if noiommu { "noiommu-" } else { "" },
+        group_number
+    ))?;
 
     // check if group is viable
 
@@ -197,6 +199,7 @@ pub struct VfioContainer {
     iommu_iova_alignment: usize,
     iommu_max_num_mappings: u32,
     iommu_valid_iova_ranges: Box<[Range<u64>]>,
+    noiommu: bool,
 }
 
 impl VfioContainer {
@@ -208,7 +211,7 @@ impl VfioContainer {
     ///
     /// This fails if any of the groups is already open elsewhere, for instance if another
     /// [`VfioContainer`] containing one of the groups already currently exists.
-    pub fn new(groups: &[u32]) -> io::Result<VfioContainer> {
+    pub fn new(groups: &[u32], noiommu: bool) -> io::Result<VfioContainer> {
         // open groups
 
         let group_numbers = Vec::from(groups)
@@ -219,7 +222,7 @@ impl VfioContainer {
 
         let groups: HashMap<_, _> = group_numbers
             .iter()
-            .map(|&n| Ok((n, open_group(n)?)))
+            .map(|&n| Ok((n, open_group(n, noiommu)?)))
             .collect::<io::Result<_>>()?;
 
         // create container
@@ -242,7 +245,12 @@ impl VfioContainer {
 
         // check extension
 
-        if unsafe { vfio_check_extension(fd, VFIO_TYPE1v2_IOMMU as usize)? } != 1 {
+        let iommu_type = if noiommu {
+            VFIO_NOIOMMU_IOMMU
+        } else {
+            VFIO_TYPE1v2_IOMMU
+        };
+        if unsafe { vfio_check_extension(fd, iommu_type as usize)? } != 1 {
             return Err(io::Error::new(ErrorKind::InvalidInput, "TODO"));
         }
 
@@ -254,11 +262,19 @@ impl VfioContainer {
 
         // enable IOMMU
 
-        unsafe { vfio_set_iommu(fd, VFIO_TYPE1v2_IOMMU as usize)? };
+        unsafe { vfio_set_iommu(fd, iommu_type as usize)? };
 
         // get IOMMU info
 
-        let iommu_info = get_iommu_info(fd)?;
+        let mut iommu_info = IommuInfo {
+            iova_alignment: 0_usize,
+            max_num_mappings: 0,
+            valid_iova_ranges: Vec::new().into(),
+        };
+
+        if iommu_type == VFIO_TYPE1v2_IOMMU {
+            iommu_info = get_iommu_info(fd)?;
+        }
 
         // success
 
@@ -269,6 +285,7 @@ impl VfioContainer {
             iommu_iova_alignment: iommu_info.iova_alignment,
             iommu_max_num_mappings: iommu_info.max_num_mappings,
             iommu_valid_iova_ranges: iommu_info.valid_iova_ranges,
+            noiommu,
         })
     }
 
@@ -281,8 +298,12 @@ impl VfioContainer {
 
     /// Returns a thing that lets you manage IOMMU mappings for DMA for all devices in all groups
     /// that belong to this container.
-    pub fn iommu(&self) -> PciIommu {
-        PciIommu { internal: self }
+    pub fn iommu(&self) -> Option<PciIommu> {
+        if self.noiommu {
+            None
+        } else {
+            Some(PciIommu { internal: self })
+        }
     }
 
     /// Tries to reset all the PCI functions in all the VFIO groups that `self` refers to.
