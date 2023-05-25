@@ -46,7 +46,9 @@ use crate::config::PciConfig;
 use crate::device::{PciDevice, PciDeviceInternal};
 use crate::interrupts::{PciInterruptKind, PciInterrupts};
 use crate::iommu::PciIommu;
-use crate::regions::{BackedByPciSubregion, OwningPciRegion, Permissions, RegionIdentifier};
+use crate::regions::{
+    BackedByPciSubregion, OwningPciRegion, PciRegion, Permissions, RegionIdentifier,
+};
 
 pub use containers::VfioContainer;
 
@@ -218,6 +220,14 @@ impl PciDevice for VfioPciDevice {
             RegionIdentifier::Bar(index),
             bar.is_mappable(),
         ))
+    }
+
+    fn bar_region(&self, index: usize) -> Option<Box<dyn PciRegion>> {
+        let bar: Option<OwningPciRegion> = self.bar(index);
+        match bar {
+            Some(b) => Some(Box::new(b) as Box<dyn PciRegion>),
+            None => None,
+        }
     }
 
     fn rom(&self) -> Option<OwningPciRegion> {

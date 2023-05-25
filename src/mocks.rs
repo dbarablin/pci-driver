@@ -27,6 +27,7 @@ mock! {
     impl PciDevice for PciDevice {
         fn config<'a>(&self) -> PciConfig<'static>;
         fn bar<'a>(&self, index: usize) -> Option<OwningPciRegion>;
+        fn bar_region<'a>(&self, index: usize) -> Option<Box<dyn PciRegion>>;
         fn rom<'a>(&self) -> Option<OwningPciRegion>;
         fn iommu<'a>(&self) -> Option<PciIommu<'static>>;
         fn interrupts<'a>(&self) -> PciInterrupts<'static>;

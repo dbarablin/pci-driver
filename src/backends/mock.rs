@@ -30,6 +30,10 @@ impl PciDevice for MockPciDevice {
         todo!()
     }
 
+    fn bar_region(&self, _index: usize) -> Option<Box<dyn PciRegion>> {
+        todo!()
+    }
+
     fn rom(&self) -> Option<OwningPciRegion> {
         todo!()
     }

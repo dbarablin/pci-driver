@@ -9,7 +9,7 @@ use std::os::unix::io::RawFd;
 use crate::config::PciConfig;
 use crate::interrupts::{PciInterruptKind, PciInterrupts};
 use crate::iommu::PciIommu;
-use crate::regions::{OwningPciRegion, Permissions, RegionIdentifier};
+use crate::regions::{OwningPciRegion, PciRegion, Permissions, RegionIdentifier};
 
 /* ---------------------------------------------------------------------------------------------- */
 
@@ -45,6 +45,9 @@ pub trait PciDevice: Debug + Send + Sync + Sealed {
     /// The returned value does _not_ borrow the `PciDevice`, instead sharing ownership of its
     /// internal resources, so take care to drop it when you want to fully let go of the device.
     fn bar(&self, index: usize) -> Option<OwningPciRegion>;
+
+    /// Same as bar(), but returns a `dyn PciRegion` instead of OwningPciRegion.
+    fn bar_region(&self, index: usize) -> Option<Box<dyn PciRegion>>;
 
     /// Returns a region that is the PCI Expansion ROM, or `None` if the device doesn't have one.
     ///
