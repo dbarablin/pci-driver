@@ -10,6 +10,7 @@ use std::io::{self, ErrorKind};
 use std::mem;
 use std::ops::Range;
 use std::os::unix::io::AsRawFd;
+use std::os::unix::io::FromRawFd;
 use std::os::unix::prelude::RawFd;
 
 use crate::backends::vfio::bindings::{
@@ -289,11 +290,76 @@ impl VfioContainer {
         })
     }
 
+    /// Creates a new [`VfioContainer`] using already opened vfio file descriptors.
+    pub fn from_raw_fds(
+        container_fd: i32,
+        group: u32,
+        group_fd: i32,
+        noiommu: bool,
+    ) -> io::Result<VfioContainer> {
+        // open groups
+
+        // TODO: add support for multiple groups, if needed
+        let group_numbers = Box::new([group]);
+        let groups: HashMap<_, _> = unsafe { [(group, File::from_raw_fd(group_fd))].into() };
+
+        // open container
+
+        let file = unsafe { File::from_raw_fd(container_fd) };
+
+        // check API version
+
+        if unsafe { vfio_get_api_version(container_fd)? } != VFIO_API_VERSION as i32 {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "Wrong VFIO_API_VERSION",
+            ));
+        }
+
+        // check extension
+
+        let iommu_type = if noiommu {
+            VFIO_NOIOMMU_IOMMU
+        } else {
+            VFIO_TYPE1v2_IOMMU
+        };
+        if unsafe { vfio_check_extension(container_fd, iommu_type as usize)? } != 1 {
+            return Err(io::Error::new(ErrorKind::InvalidInput, "TODO"));
+        }
+
+        // get IOMMU info
+
+        let mut iommu_info = IommuInfo {
+            iova_alignment: 0_usize,
+            max_num_mappings: 0,
+            valid_iova_ranges: Vec::new().into(),
+        };
+
+        if iommu_type == VFIO_TYPE1v2_IOMMU {
+            iommu_info = get_iommu_info(container_fd)?;
+        }
+
+        Ok(VfioContainer {
+            file,
+            group_numbers,
+            groups,
+            iommu_iova_alignment: iommu_info.iova_alignment,
+            iommu_max_num_mappings: iommu_info.max_num_mappings,
+            iommu_valid_iova_ranges: iommu_info.valid_iova_ranges,
+            noiommu,
+        })
+    }
+
     /// The group numbers of the groups this container contains.
     ///
     /// In ascending order, without duplicates.
     pub fn groups(&self) -> &[u32] {
         &self.group_numbers
+    }
+
+    /// Returns a mapping from group number to file that belongs to this group.
+    pub fn group_files(&self) -> &HashMap<u32, File> {
+        &self.groups
     }
 
     /// Returns a thing that lets you manage IOMMU mappings for DMA for all devices in all groups
@@ -319,6 +385,11 @@ impl VfioContainer {
     pub fn reset(&self) -> io::Result<()> {
         // TODO: Implement.
         Err(io::Error::new(ErrorKind::Other, "not yet implemented"))
+    }
+
+    /// Returns the raw file descriptor of the container.
+    pub fn as_raw_fd(&self) -> RawFd {
+        self.file.as_raw_fd()
     }
 }
 
