@@ -337,7 +337,7 @@ impl PciDeviceInternal for VfioPciDeviceInner {
 
         // allocate memory for vfio_irq_set
 
-        let eventfds_size = eventfds.len() * mem::size_of::<i32>();
+        let eventfds_size = std::mem::size_of_val(eventfds);
         let total_size = mem::size_of::<vfio_irq_set>() + eventfds_size;
 
         let layout = Layout::from_size_align(total_size, 4)

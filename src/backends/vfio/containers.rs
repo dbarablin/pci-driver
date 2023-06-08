@@ -7,6 +7,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::fs::{File, OpenOptions};
 use std::io::{self, ErrorKind};
+use std::iter::FromIterator;
 use std::mem;
 use std::ops::Range;
 use std::os::unix::io::AsRawFd;
@@ -301,7 +302,7 @@ impl VfioContainer {
 
         // TODO: add support for multiple groups, if needed
         let group_numbers = Box::new([group]);
-        let groups: HashMap<_, _> = unsafe { [(group, File::from_raw_fd(group_fd))].into() };
+        let groups = unsafe { HashMap::from_iter(vec![(group, File::from_raw_fd(group_fd))]) };
 
         // open container
 
